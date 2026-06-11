@@ -1,1 +1,5 @@
 .shopping/
+.gitignore
+shopping_list.json
+*.shopping
+__pycache__/

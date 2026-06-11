@@ -42,7 +42,7 @@ def run_agent(user_message: str, history: list) -> str:
 
     while True:
         response = client.messages.create(
-            model="claude-opus-4-5",
+            model="claude-opus-4-8",
             max_tokens=1024,
             system=SYSTEM_PROMPT,
             tools=TOOLS,
