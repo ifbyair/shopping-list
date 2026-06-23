@@ -1,19 +1,13 @@
 """
-agent.py — the agent loop. This is the core of the whole thing.
-
-The flow per user message:
-  1. Send message + tools to Claude
-  2. If Claude wants to call a tool → run it, send result back
-  3. Repeat until Claude gives a final text response
-  4. Print response, wait for next user message
-
-Conversation history is kept in memory for the session,
-so the agent remembers context within a conversation.
+agent.py — the agent loop.
 """
 
 import json
 import anthropic
+from dotenv import load_dotenv
 from tools import TOOLS, TOOL_FUNCTIONS
+
+load_dotenv()
 
 client = anthropic.Anthropic()
 
@@ -30,14 +24,31 @@ If it's a new recurring item, add it as a staple.
 Always confirm what you did in a short, friendly message. 
 When showing the list, format it clearly."""
 
+
+def _serialize_content(content) -> list:
+    """
+    Convert Anthropic SDK content blocks (TextBlock, ToolUseBlock, etc.)
+    into plain dicts that can be stored in SQLite via json.dumps.
+    """
+    result = []
+    for block in content:
+        if block.type == "text":
+            result.append({"type": "text", "text": block.text})
+        elif block.type == "tool_use":
+            result.append({
+                "type": "tool_use",
+                "id": block.id,
+                "name": block.name,
+                "input": block.input,
+            })
+    return result
+
+
 def run_agent(user_message: str, history: list) -> str:
     """
     Run one turn of the agent loop.
-    Mutates `history` in place (appends user message and assistant response).
-    Returns the assistant's final text response.
+    Mutates `history` in place. Returns the assistant's final text response.
     """
-
-    # Add user message to history
     history.append({"role": "user", "content": user_message})
 
     while True:
@@ -49,39 +60,29 @@ def run_agent(user_message: str, history: list) -> str:
             messages=history,
         )
 
-        # ── Case 1: Claude wants to call one or more tools ──────────────────
         if response.stop_reason == "tool_use":
+            # Serialize SDK objects → plain dicts before storing in history
+            serialized = _serialize_content(response.content)
+            history.append({"role": "assistant", "content": serialized})
 
-            # Append Claude's response (which contains tool call requests) to history
-            history.append({"role": "assistant", "content": response.content})
-
-            # Process every tool call in this response (can be multiple)
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
                     print(f"  [tool call] {block.name}({json.dumps(block.input)})")
-
-                    # Actually run the tool
                     fn = TOOL_FUNCTIONS[block.name]
                     result = fn(block.input)
-
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
                         "content": json.dumps(result),
                     })
 
-            # Send tool results back to Claude
             history.append({"role": "user", "content": tool_results})
 
-            # Loop again — Claude will now produce either another tool call or a final answer
-
-        # ── Case 2: Claude is done, final text response ──────────────────────
         elif response.stop_reason == "end_turn":
             final_text = next(
                 (block.text for block in response.content if hasattr(block, "text")), ""
             )
-            # Append assistant's final response to history
             history.append({"role": "assistant", "content": final_text})
             return final_text
 
@@ -93,7 +94,7 @@ def main():
     print("🛒 Shopping List Agent")
     print("  Type your message, or 'quit' to exit.\n")
 
-    history = []  # Persists within the session
+    history = []
 
     while True:
         try:
