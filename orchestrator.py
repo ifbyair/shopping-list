@@ -1,10 +1,5 @@
 """
 orchestrator.py — coordinates the shopping and recipe agents.
-
-Change from previous version: history is now passed in from whatsapp.py
-(loaded from SQLite) rather than managed in a local dict.
-This makes the orchestrator stateless — it doesn't own the history,
-it just uses it. Storage is the responsibility of the layer above.
 """
 
 import json
@@ -67,12 +62,22 @@ TOOLS = [
 ]
 
 
+def _extract_text(response_content) -> str:
+    """
+    Safely extract plain text from an agent response.
+    Handles both raw strings and lists of Anthropic content blocks (TextBlock, etc.)
+    """
+    if isinstance(response_content, str):
+        return response_content
+    if isinstance(response_content, list):
+        return " ".join(
+            block.text for block in response_content
+            if hasattr(block, "text")
+        )
+    return str(response_content)
+
+
 def run_orchestrator(user_message: str, sender: str, shopping_history: list) -> str:
-    """
-    Run one turn of the orchestrator loop.
-    shopping_history is passed in from whatsapp.py (loaded from SQLite)
-    and mutated in place — the caller saves it back to the DB.
-    """
     messages = [{"role": "user", "content": user_message}]
 
     while True:
@@ -93,9 +98,9 @@ def run_orchestrator(user_message: str, sender: str, shopping_history: list) -> 
                     print(f"  [orchestrator] delegating to: {block.name}")
 
                     if block.name == "ask_shopping_agent":
-                        result = run_agent(block.input["message"], shopping_history)
+                        result = _extract_text(run_agent(block.input["message"], shopping_history))
                     elif block.name == "ask_recipe_agent":
-                        result = run_recipe_agent(block.input["message"])
+                        result = _extract_text(run_recipe_agent(block.input["message"]))
                     else:
                         result = f"Unknown agent: {block.name}"
 
