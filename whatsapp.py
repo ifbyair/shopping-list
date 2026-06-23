@@ -1,13 +1,15 @@
 """
-whatsapp.py — webhook server, now pointing at the orchestrator.
+whatsapp.py — webhook server with persistent conversation history.
 
-The only change from before: run_agent() is replaced by run_orchestrator().
-Everything else is identical — showing how cleanly multi-agent plugs in.
+The only meaningful change from the previous version:
+  - conversation_histories dict  →  load_history() / save_history() from SQLite
+  - Everything else is identical
 """
 
 from flask import Flask, request, Response
 from twilio.twiml.messaging_response import MessagingResponse
 from orchestrator import run_orchestrator
+from storage import load_history, save_history, clear_history
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -25,8 +27,19 @@ def whatsapp_webhook():
     if not incoming_msg:
         return Response("", status=204)
 
+    # Special command: let user reset their own history
+    if incoming_msg.lower() in ("reset", "forget everything"):
+        clear_history(sender)
+        resp = MessagingResponse()
+        resp.message("Memory cleared! Starting fresh.")
+        return Response(str(resp), mimetype="text/xml")
+
+    # Load history from DB, run agent, save history back
+    history = load_history(sender)
+
     try:
-        reply = run_orchestrator(incoming_msg, sender)
+        reply = run_orchestrator(incoming_msg, sender, history)
+        save_history(sender, history)  # history mutated in place by run_orchestrator
     except Exception as e:
         print(f"Orchestrator error: {e}")
         reply = "Sorry, something went wrong. Please try again."
