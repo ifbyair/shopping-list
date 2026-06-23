@@ -1,2 +1,5 @@
 anthropic
-
+flask
+gunicorn
+twilio
+python-dotenv
