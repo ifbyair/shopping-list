@@ -3,3 +3,4 @@
 shopping_list.json
 *.shopping
 __pycache__/
+.env

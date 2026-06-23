@@ -1,17 +1,18 @@
 """
-whatsapp.py — webhook server that connects WhatsApp (via Twilio) to the shopping agent.
+whatsapp.py — webhook server, now pointing at the orchestrator.
+
+The only change from before: run_agent() is replaced by run_orchestrator().
+Everything else is identical — showing how cleanly multi-agent plugs in.
 """
 
 from flask import Flask, request, Response
 from twilio.twiml.messaging_response import MessagingResponse
-from agent import run_agent
+from orchestrator import run_orchestrator
 from dotenv import load_dotenv
 
 load_dotenv()
 
 app = Flask(__name__)
-
-conversation_histories = {}
 
 
 @app.route("/whatsapp", methods=["POST"])
@@ -24,15 +25,10 @@ def whatsapp_webhook():
     if not incoming_msg:
         return Response("", status=204)
 
-    if sender not in conversation_histories:
-        conversation_histories[sender] = []
-
-    history = conversation_histories[sender]
-
     try:
-        reply = run_agent(incoming_msg, history)
+        reply = run_orchestrator(incoming_msg, sender)
     except Exception as e:
-        print(f"Agent error: {e}")
+        print(f"Orchestrator error: {e}")
         reply = "Sorry, something went wrong. Please try again."
 
     resp = MessagingResponse()
@@ -42,12 +38,9 @@ def whatsapp_webhook():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return {"status": "ok", "conversations": len(conversation_histories)}
+    return {"status": "ok"}
 
 
 if __name__ == "__main__":
-    print("🛒 Shopping Agent — WhatsApp webhook running on port 5000")
-    print("   Health check: http://localhost:5000/health")
-    print("   Webhook URL:  http://localhost:5000/whatsapp")
+    print("🏠 Household Assistant — WhatsApp webhook running on port 5000")
     app.run(debug=True, port=5000)
-
