@@ -1,10 +1,5 @@
 """
-orchestrator.py — coordinates agents, now with semantic memory injection.
-
-Change from previous version:
-  - retrieve_relevant() called before each LLM call
-  - Relevant facts injected into system prompt as context
-  - extract_facts() + store_facts() called after each response
+orchestrator.py — coordinates agents with memory injected into all specialists.
 """
 
 import json
@@ -22,10 +17,12 @@ You have two specialist agents you can delegate to:
 - Shopping agent: handles the shopping list (adding items, checking what's needed, etc.)
 - Recipe agent: suggests meals based on available ingredients
 
-For any message:
-- If it's about the shopping list → delegate to the shopping agent
-- If it's about meals, recipes, or "what can I make" → delegate to the recipe agent
-- If it involves both → call both
+Routing rules:
+- Shopping list requests (add, remove, activate, check, buy) → ask_shopping_agent
+- ANY mention of meals, food suggestions, cooking, dinner, lunch, breakfast,
+  recipes, "what can I make", "what can I cook", "suggest", "what's for dinner",
+  "meal ideas" → ask_recipe_agent
+- Requests involving both → call both
 
 Always delegate — never answer shopping or recipe questions yourself.
 Combine the agents' responses into one friendly, coherent reply."""
@@ -34,16 +31,14 @@ TOOLS = [
     {
         "name": "ask_shopping_agent",
         "description": (
-            "Delegate a message to the shopping list agent. Use for anything related to "
-            "the shopping list: adding items, checking what's needed, marking things bought, etc."
+            "Delegate to the shopping list agent. Use for adding, removing, activating, "
+            "checking, or managing items on the shopping list."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "message": {
-                    "type": "string",
-                    "description": "The message or question to send to the shopping agent."
-                }
+                "message": {"type": "string", "description": "Message for the shopping agent."},
+                "user_context": {"type": "string", "description": "Relevant user facts/preferences to be aware of."},
             },
             "required": ["message"],
         },
@@ -51,16 +46,14 @@ TOOLS = [
     {
         "name": "ask_recipe_agent",
         "description": (
-            "Delegate a message to the recipe/meal planning agent. Use when the user "
-            "asks about meals, recipes, or what they can cook."
+            "Delegate to the meal planning agent. Use for ANY request about meals, recipes, "
+            "cooking suggestions, dinner ideas, or what the user can make or eat."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "message": {
-                    "type": "string",
-                    "description": "The message or question to send to the recipe agent."
-                }
+                "message": {"type": "string", "description": "Message for the recipe agent."},
+                "user_context": {"type": "string", "description": "Relevant user facts/preferences to be aware of."},
             },
             "required": ["message"],
         },
@@ -69,40 +62,42 @@ TOOLS = [
 
 
 def _extract_text(response_content) -> str:
-    """Safely extract plain text from an agent response."""
     if isinstance(response_content, str):
         return response_content
     if isinstance(response_content, list):
         return " ".join(
-            block.text for block in response_content
-            if hasattr(block, "text")
+            block.text for block in response_content if hasattr(block, "text")
         )
     return str(response_content)
 
 
 def _build_system_prompt(sender: str, user_message: str) -> str:
-    """Build system prompt with relevant memories injected."""
     facts = retrieve_relevant(sender, user_message)
     if not facts:
         return BASE_SYSTEM_PROMPT
-
     facts_text = "\n".join(f"- {f}" for f in facts)
     return f"""{BASE_SYSTEM_PROMPT}
 
 --- What you know about this user ---
 {facts_text}
 -------------------------------------
-Use this context naturally when relevant. Don't mention that you have a memory system."""
+Use this context when routing and when passing user_context to agents.
+Do not mention that you have a memory system."""
+
+
+def _format_context(facts: list[str]) -> str:
+    """Format facts as a context string to pass to specialist agents."""
+    if not facts:
+        return ""
+    return "User context:\n" + "\n".join(f"- {f}" for f in facts)
 
 
 def run_orchestrator(user_message: str, sender: str, shopping_history: list) -> str:
-    """
-    Run one turn of the orchestrator loop.
-    Retrieves relevant memories before responding,
-    extracts new facts after responding.
-    """
-    # Inject relevant memories into system prompt
-    system_prompt = _build_system_prompt(sender, user_message)
+    """Run one turn of the orchestrator loop with memory injection."""
+    # Get relevant memories once — used both in system prompt and passed to agents
+    relevant_facts = retrieve_relevant(sender, user_message)
+    user_context   = _format_context(relevant_facts)
+    system_prompt  = _build_system_prompt(sender, user_message)
 
     messages = [{"role": "user", "content": user_message}]
 
@@ -123,10 +118,15 @@ def run_orchestrator(user_message: str, sender: str, shopping_history: list) -> 
                 if block.type == "tool_use":
                     print(f"  [orchestrator] delegating to: {block.name}")
 
+                    # Pass user context + message to specialist agents
+                    agent_message = block.input["message"]
+                    if user_context:
+                        agent_message = f"{user_context}\n\n{agent_message}"
+
                     if block.name == "ask_shopping_agent":
-                        result = _extract_text(run_agent(block.input["message"], shopping_history))
+                        result = _extract_text(run_agent(agent_message, shopping_history))
                     elif block.name == "ask_recipe_agent":
-                        result = _extract_text(run_recipe_agent(block.input["message"]))
+                        result = _extract_text(run_recipe_agent(agent_message))
                     else:
                         result = f"Unknown agent: {block.name}"
 
@@ -153,8 +153,9 @@ def run_orchestrator(user_message: str, sender: str, shopping_history: list) -> 
 
 if __name__ == "__main__":
     print("🏠 Household Assistant (with semantic memory)")
-    print("   Try: 'I hate mushrooms'")
-    print("   Then: 'what can I make for dinner?'\n")
+    print("   Try: 'I am lactose intolerant'")
+    print("   Then: 'add milk to my list'")
+    print("   Then: 'suggest a meal for dinner tonight'\n")
 
     sender = "local-user"
     from storage import load_history, save_history, clear_history
@@ -171,7 +172,7 @@ if __name__ == "__main__":
 
         if user_input.lower() in ("reset", "forget everything"):
             clear_history(sender)
-            print("Memory cleared!\n")
+            print("History cleared!\n")
             continue
 
         history = load_history(sender)
