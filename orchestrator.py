@@ -1,15 +1,21 @@
 """
-orchestrator.py — coordinates the shopping and recipe agents.
+orchestrator.py — coordinates agents, now with semantic memory injection.
+
+Change from previous version:
+  - retrieve_relevant() called before each LLM call
+  - Relevant facts injected into system prompt as context
+  - extract_facts() + store_facts() called after each response
 """
 
 import json
 import anthropic
 from agent import run_agent
 from recipe_agent import run_recipe_agent
+from memory import retrieve_relevant, extract_facts, store_facts
 
 client = anthropic.Anthropic()
 
-SYSTEM_PROMPT = """You are a household assistant that coordinates a shopping list
+BASE_SYSTEM_PROMPT = """You are a household assistant that coordinates a shopping list
 and meal planning.
 
 You have two specialist agents you can delegate to:
@@ -63,10 +69,7 @@ TOOLS = [
 
 
 def _extract_text(response_content) -> str:
-    """
-    Safely extract plain text from an agent response.
-    Handles both raw strings and lists of Anthropic content blocks (TextBlock, etc.)
-    """
+    """Safely extract plain text from an agent response."""
     if isinstance(response_content, str):
         return response_content
     if isinstance(response_content, list):
@@ -77,14 +80,37 @@ def _extract_text(response_content) -> str:
     return str(response_content)
 
 
+def _build_system_prompt(sender: str, user_message: str) -> str:
+    """Build system prompt with relevant memories injected."""
+    facts = retrieve_relevant(sender, user_message)
+    if not facts:
+        return BASE_SYSTEM_PROMPT
+
+    facts_text = "\n".join(f"- {f}" for f in facts)
+    return f"""{BASE_SYSTEM_PROMPT}
+
+--- What you know about this user ---
+{facts_text}
+-------------------------------------
+Use this context naturally when relevant. Don't mention that you have a memory system."""
+
+
 def run_orchestrator(user_message: str, sender: str, shopping_history: list) -> str:
+    """
+    Run one turn of the orchestrator loop.
+    Retrieves relevant memories before responding,
+    extracts new facts after responding.
+    """
+    # Inject relevant memories into system prompt
+    system_prompt = _build_system_prompt(sender, user_message)
+
     messages = [{"role": "user", "content": user_message}]
 
     while True:
         response = client.messages.create(
             model="claude-opus-4-5",
             max_tokens=1024,
-            system=SYSTEM_PROMPT,
+            system=system_prompt,
             tools=TOOLS,
             messages=messages,
         )
@@ -113,16 +139,22 @@ def run_orchestrator(user_message: str, sender: str, shopping_history: list) -> 
             messages.append({"role": "user", "content": tool_results})
 
         elif response.stop_reason == "end_turn":
-            return next(
+            final_text = next(
                 (block.text for block in response.content if hasattr(block, "text")), ""
             )
 
+            # Extract and store facts from this exchange
+            facts = extract_facts(user_message, final_text)
+            if facts:
+                store_facts(sender, facts)
+
+            return final_text
+
 
 if __name__ == "__main__":
-    print("🏠 Household Assistant (multi-agent)")
-    print("   Try: 'what can I make for dinner?'")
-    print("   Or:  'I ran out of coffee'")
-    print("   Or:  'reset' to clear your history\n")
+    print("🏠 Household Assistant (with semantic memory)")
+    print("   Try: 'I hate mushrooms'")
+    print("   Then: 'what can I make for dinner?'\n")
 
     sender = "local-user"
     from storage import load_history, save_history, clear_history

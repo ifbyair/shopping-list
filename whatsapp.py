@@ -1,21 +1,23 @@
 """
-whatsapp.py — webhook server with persistent conversation history.
+whatsapp.py — webhook server with persistent history and semantic memory.
 """
 
 from flask import Flask, request, Response
 from twilio.twiml.messaging_response import MessagingResponse
 from orchestrator import run_orchestrator
 from storage import load_history, save_history, clear_history
+from memory import get_all_facts, clear_memories
 from dotenv import load_dotenv
 
 load_dotenv()
 
 app = Flask(__name__)
 
-# ── Special commands (intercepted before reaching the orchestrator) ───────────
-RESET_COMMANDS   = {"reset", "forget everything"}
-HISTORY_COMMANDS = {"history", "show history", "my history", "show my history"}
-HELP_COMMANDS    = {"user help", "usage", "commands", "help me"}
+# ── Special commands ──────────────────────────────────────────────────────────
+RESET_COMMANDS    = {"reset", "forget everything"}
+HISTORY_COMMANDS  = {"history", "show history", "my history", "show my history"}
+MEMORIES_COMMANDS = {"memories", "what do you know about me", "my memories"}
+HELP_COMMANDS     = {"user help", "usage", "commands", "help me"}
 
 HELP_TEXT = """🏠 *Household Assistant — Available Commands*
 
@@ -31,14 +33,14 @@ HELP_TEXT = """🏠 *Household Assistant — Available Commands*
 
 *System commands:*
   `history` — show conversation history
-  `reset` — clear conversation history
+  `memories` — show what I've learned about you
+  `reset` — clear history and memories
   `user help` — show this message
 
 You can also just talk naturally — the assistant understands context! 💬"""
 
 
 def _format_history(history: list) -> str:
-    """Format conversation history into a readable WhatsApp message."""
     if not history:
         return "No conversation history yet."
 
@@ -66,6 +68,15 @@ def _format_history(history: list) -> str:
     return "\n".join(lines)
 
 
+def _format_memories(facts: list) -> str:
+    if not facts:
+        return "I don't have any long-term memories about you yet. Just keep chatting!"
+    lines = ["🧠 *What I know about you:*\n"]
+    for fact in facts:
+        lines.append(f"• {fact}")
+    return "\n".join(lines)
+
+
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_webhook():
     incoming_msg = request.form.get("Body", "").strip()
@@ -82,11 +93,16 @@ def whatsapp_webhook():
     # ── Special commands ──────────────────────────────────────────────────────
     if msg_lower in RESET_COMMANDS:
         clear_history(sender)
-        reply = "Memory cleared! Starting fresh. 🧹"
+        clear_memories(sender)
+        reply = "Memory cleared! Starting completely fresh. 🧹"
 
     elif msg_lower in HISTORY_COMMANDS:
         history = load_history(sender)
         reply = _format_history(history)
+
+    elif msg_lower in MEMORIES_COMMANDS:
+        facts = get_all_facts(sender)
+        reply = _format_memories(facts)
 
     elif msg_lower in HELP_COMMANDS:
         reply = HELP_TEXT
@@ -113,5 +129,5 @@ def health():
 
 if __name__ == "__main__":
     print("🏠 Household Assistant — WhatsApp webhook running on port 5000")
-    print("   Special commands: 'user help', 'history', 'reset'")
+    print("   Special commands: 'user help', 'history', 'memories', 'reset'")
     app.run(debug=True, port=5000)
